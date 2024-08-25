@@ -57,24 +57,20 @@ pub trait XmlStr {
 
 impl<'a> XmlStr for &'a str {
     fn end_of_attribute(&self, quote: &str) -> Option<usize> {
-        if self.is_empty()
-            || self.starts_with('&')
-            || self.starts_with('<')
-            || self.starts_with(quote)
-        {
+        if self.is_empty() || self.starts_with('<') || self.starts_with(quote) {
             return None;
         }
 
         let quote_char = quote.chars().next().expect("Cant have null quote");
 
-        self.find(&['&', '<', quote_char][..])
+        self.find(&['<', quote_char][..])
             .or_else(|| Some(self.len()))
     }
 
     fn end_of_char_data(&self) -> Option<usize> {
         fn find_end_of_char_data(bytes: &[u8]) -> Option<usize> {
             for (i, &b) in bytes.iter().enumerate() {
-                if b == b'<' || b == b'&' {
+                if b == b'<' {
                     return Some(i);
                 }
 
