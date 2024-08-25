@@ -564,6 +564,23 @@ fn parse_document_type_declaration<'a>(
     success(Token::DocumentTypeDeclaration, xml)
 }
 
+fn parse_document_type_declaration_lower<'a>(
+    pm: &mut XmlMaster<'a>,
+    xml: StringPoint<'a>,
+) -> XmlProgress<'a, Token<'a>> {
+    let (xml, _) = try_parse!(xml.expect_literal("<!doctype"));
+    let (xml, _) = try_parse!(xml.expect_space());
+    let (xml, _type_name) = try_parse!(xml
+        .consume_name()
+        .map_err(|_| SpecificError::ExpectedDocumentTypeName));
+    let (xml, _id) = try_parse!(pm.optional(xml, |p, x| parse_external_id(p, x)));
+    let (xml, _) = xml.consume_space().optional(xml);
+    let (xml, _int_subset) = try_parse!(pm.optional(xml, |p, x| parse_int_subset(p, x)));
+    let (xml, _) = try_parse!(xml.expect_literal(">"));
+
+    success(Token::DocumentTypeDeclaration, xml)
+}
+
 fn parse_pi_value(xml: StringPoint<'_>) -> XmlProgress<'_, &str> {
     let (xml, _) = try_parse!(xml.expect_space());
     xml.consume_pi_value()
@@ -697,6 +714,7 @@ impl<'a> Iterator for PullParser<'a> {
                 .alternate()
                 .one(|pm| parse_xml_declaration(pm, xml))
                 .one(|pm| parse_document_type_declaration(pm, xml))
+                .one(|pm| parse_document_type_declaration_lower(pm, xml))
                 .one(|_| parse_element_start(xml))
                 .one(|_| xml.expect_space().map(Token::Whitespace))
                 .one(|_| parse_comment(xml))
@@ -706,6 +724,7 @@ impl<'a> Iterator for PullParser<'a> {
             State::AfterDeclaration => pm
                 .alternate()
                 .one(|pm| parse_document_type_declaration(pm, xml))
+                .one(|pm| parse_document_type_declaration_lower(pm, xml))
                 .one(|_| parse_element_start(xml))
                 .one(|_| xml.expect_space().map(Token::Whitespace))
                 .one(|_| parse_comment(xml))
