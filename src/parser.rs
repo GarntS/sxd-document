@@ -868,6 +868,8 @@ impl<'a> Iterator for PullParser<'a> {
             | (State::AfterMainElement, Token::ProcessingInstruction(..))
             | (State::AfterMainElement, Token::Whitespace(..)) => State::AfterMainElement,
 
+            (State::AtBeginning, Token::DocumentTypeDeclaration) => State::AfterDeclaration,
+
             (s, t) => {
                 unreachable!("Transitioning from {:?} to {:?} is impossible", s, t);
             }
