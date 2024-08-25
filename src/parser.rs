@@ -758,6 +758,7 @@ impl<'a> Iterator for PullParser<'a> {
             State::AtBeginning => pm
                 .alternate()
                 .one(|pm| parse_xml_declaration(pm, xml))
+                .one(|pm| parse_document_type_declaration(pm, xml))
                 .one(|_| parse_element_start(xml))
                 .one(|_| xml.expect_space().map(Token::Whitespace))
                 .one(|_| parse_comment(xml))
