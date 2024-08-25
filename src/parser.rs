@@ -673,60 +673,6 @@ fn parse_attribute_literal<'a>(xml: StringPoint<'a>, quote: &str) -> XmlProgress
     success(Token::LiteralAttributeValue(val), xml)
 }
 
-fn parse_entity_ref(xml: StringPoint<'_>) -> XmlProgress<'_, Reference<'_>> {
-    let (xml, _) = try_parse!(xml
-        .consume_literal("&")
-        .map_err(|_| SpecificError::ExpectedNamedReference));
-    let (xml, name) = try_parse!(Span::parse(xml, |xml| xml
-        .consume_name()
-        .map_err(|_| SpecificError::ExpectedNamedReferenceValue)));
-    let (xml, _) = try_parse!(xml.expect_literal(";"));
-
-    success(Entity(name), xml)
-}
-
-fn parse_decimal_char_ref(xml: StringPoint<'_>) -> XmlProgress<'_, Reference<'_>> {
-    let (xml, _) = try_parse!(xml
-        .consume_literal("&#")
-        .map_err(|_| SpecificError::ExpectedDecimalReference));
-    let (xml, dec) = try_parse!(Span::parse(xml, |xml| xml
-        .consume_decimal_chars()
-        .map_err(|_| SpecificError::ExpectedDecimalReferenceValue)));
-    let (xml, _) = try_parse!(xml.expect_literal(";"));
-
-    success(DecimalChar(dec), xml)
-}
-
-fn parse_hex_char_ref(xml: StringPoint<'_>) -> XmlProgress<'_, Reference<'_>> {
-    let (xml, _) = try_parse!(xml
-        .consume_literal("&#x")
-        .map_err(|_| SpecificError::ExpectedHexReference));
-    let (xml, hex) = try_parse!(Span::parse(xml, |xml| xml.consume_hex_chars()));
-    let (xml, _) = try_parse!(xml.expect_literal(";"));
-
-    success(HexChar(hex), xml)
-}
-
-fn parse_reference<'a>(
-    pm: &mut XmlMaster<'a>,
-    xml: StringPoint<'a>,
-) -> XmlProgress<'a, Reference<'a>> {
-    pm.alternate()
-        .one(|_| parse_entity_ref(xml))
-        .one(|_| parse_decimal_char_ref(xml))
-        .one(|_| parse_hex_char_ref(xml))
-        .finish()
-}
-
-fn parse_attribute_reference<'a>(
-    pm: &mut XmlMaster<'a>,
-    xml: StringPoint<'a>,
-) -> XmlProgress<'a, Token<'a>> {
-    let (xml, val) = try_parse!(parse_reference(pm, xml));
-
-    success(Token::ReferenceAttributeValue(val), xml)
-}
-
 fn parse_char_data<'a>(xml: StringPoint<'a>) -> XmlProgress<'a, Token<'_>> {
     xml.consume_char_data().map(Token::CharData)
 }
@@ -737,14 +683,6 @@ fn parse_cdata<'a>(xml: StringPoint<'a>) -> XmlProgress<'a, Token<'_>> {
     let (xml, _) = try_parse!(xml.expect_literal("]]>"));
 
     success(Token::CData(text), xml)
-}
-
-fn parse_content_reference<'a>(
-    pm: &mut XmlMaster<'a>,
-    xml: StringPoint<'a>,
-) -> XmlProgress<'a, Token<'a>> {
-    let (xml, r) = try_parse!(parse_reference(pm, xml));
-    success(Token::ContentReference(r), xml)
 }
 
 impl<'a> Iterator for PullParser<'a> {
@@ -784,7 +722,6 @@ impl<'a> Iterator for PullParser<'a> {
             State::AfterAttributeStart(_, quote) => pm
                 .alternate()
                 .one(|_| parse_attribute_literal(xml, quote))
-                .one(|pm| parse_attribute_reference(pm, xml))
                 .one(|_| parse_attribute_end(xml, quote))
                 .finish(),
 
@@ -794,7 +731,6 @@ impl<'a> Iterator for PullParser<'a> {
                 .one(|_| parse_element_close(xml))
                 .one(|_| parse_char_data(xml))
                 .one(|_| parse_cdata(xml))
-                .one(|pm| parse_content_reference(pm, xml))
                 .one(|_| parse_comment(xml))
                 .one(|_| parse_pi(xml))
                 .finish(),
@@ -833,7 +769,8 @@ impl<'a> Iterator for PullParser<'a> {
             (State::AtBeginning, Token::XmlDeclaration)
             | (State::AtBeginning, Token::ProcessingInstruction(..))
             | (State::AtBeginning, Token::Comment(..))
-            | (State::AtBeginning, Token::Whitespace(..)) => State::AfterDeclaration,
+            | (State::AtBeginning, Token::Whitespace(..))
+            | (State::AtBeginning, Token::DocumentTypeDeclaration) => State::AfterDeclaration,
             (State::AtBeginning, Token::ElementStart(..)) => State::AfterElementStart(0),
 
             (State::AfterDeclaration, Token::ProcessingInstruction(..))
@@ -867,8 +804,6 @@ impl<'a> Iterator for PullParser<'a> {
             (State::AfterMainElement, Token::Comment(..))
             | (State::AfterMainElement, Token::ProcessingInstruction(..))
             | (State::AfterMainElement, Token::Whitespace(..)) => State::AfterMainElement,
-
-            (State::AtBeginning, Token::DocumentTypeDeclaration) => State::AfterDeclaration,
 
             (s, t) => {
                 unreachable!("Transitioning from {:?} to {:?} is impossible", s, t);
