@@ -548,7 +548,11 @@ impl Writer {
         }
     }
 
-    fn format_body<W: ?Sized>(&self, element: dom::Element<'_>, writer: &mut W) -> io::Result<()>
+    pub fn format_body<W: ?Sized>(
+        &self,
+        element: dom::Element<'_>,
+        writer: &mut W,
+    ) -> io::Result<()>
     where
         W: Write,
     {
