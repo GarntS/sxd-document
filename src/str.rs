@@ -36,8 +36,6 @@ pub trait XmlStr {
     fn end_of_cdata(&self) -> Option<usize>;
     /// Find the end of a run of decimal characters
     fn end_of_decimal_chars(&self) -> Option<usize>;
-    /// Find the end of a run of hexidecimal characters
-    fn end_of_hex_chars(&self) -> Option<usize>;
     /// Find the end of the comment, not including the -->
     fn end_of_comment(&self) -> Option<usize>;
     /// Find the end of the processing instruction, not including the ?>
@@ -94,10 +92,6 @@ impl<'a> XmlStr for &'a str {
 
     fn end_of_decimal_chars(&self) -> Option<usize> {
         self.end_of_start_rest(|c| c.is_decimal_char(), |c| c.is_decimal_char())
-    }
-
-    fn end_of_hex_chars(&self) -> Option<usize> {
-        self.end_of_start_rest(|c| c.is_hex_char(), |c| c.is_hex_char())
     }
 
     fn end_of_comment(&self) -> Option<usize> {
@@ -257,7 +251,7 @@ mod test {
 
     #[test]
     fn end_of_char_data_leading_ampersand() {
-        assert_eq!("&".end_of_char_data(), None);
+        assert_eq!("&".end_of_char_data(), Some(1));
     }
 
     #[test]
@@ -272,7 +266,7 @@ mod test {
 
     #[test]
     fn end_of_char_data_until_ampersand() {
-        assert_eq!("hello&world".end_of_char_data(), Some("hello".len()));
+        assert_eq!("hello&world".end_of_char_data(), Some(11));
     }
 
     #[test]

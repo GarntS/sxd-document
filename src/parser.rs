@@ -17,16 +17,13 @@
 #[allow(unused, deprecated)] // rust-lang/rust#46510
 use std::ascii::AsciiExt;
 use std::{
-    char,
     collections::{BTreeSet, HashMap},
-    error, fmt, iter,
+    error, fmt,
     mem::replace,
     ops::Deref,
 };
 
 use peresil::{self, ParseMaster, Recoverable, StringPoint};
-
-use self::Reference::*;
 
 use super::{dom, str::XmlStr, PrefixedName, QName};
 
@@ -65,20 +62,8 @@ enum SpecificError {
     ExpectedClosingQuote(&'static str),
     ExpectedOpeningQuote(&'static str),
 
-    ExpectedDecimalReferenceValue,
-    ExpectedHexReferenceValue,
-    ExpectedNamedReferenceValue,
-
-    ExpectedDecimalReference,
-    ExpectedHexReference,
-    ExpectedNamedReference,
-
     InvalidProcessingInstructionTarget,
     MismatchedElementEndName,
-
-    InvalidDecimalReference,
-    InvalidHexReference,
-    UnknownNamedReference,
 
     DuplicateAttribute,
     RedefinedNamespace,
@@ -97,9 +82,6 @@ impl Recoverable for SpecificError {
             | ExpectedYesNo
             | InvalidProcessingInstructionTarget
             | MismatchedElementEndName
-            | InvalidDecimalReference
-            | InvalidHexReference
-            | UnknownNamedReference
             | DuplicateAttribute
             | RedefinedNamespace
             | RedefinedDefaultNamespace
@@ -153,17 +135,8 @@ impl error::Error for SpecificError {
             ExpectedSystemLiteral => "expected system literal",
             ExpectedClosingQuote(_) => "expected closing quote",
             ExpectedOpeningQuote(_) => "expected opening quote",
-            ExpectedDecimalReferenceValue => "expected decimal reference value",
-            ExpectedHexReferenceValue => "expected hex reference value",
-            ExpectedNamedReferenceValue => "expected named reference value",
-            ExpectedDecimalReference => "expected decimal reference",
-            ExpectedHexReference => "expected hex reference",
-            ExpectedNamedReference => "expected named reference",
             InvalidProcessingInstructionTarget => "invalid processing instruction target",
             MismatchedElementEndName => "mismatched element end name",
-            InvalidDecimalReference => "invalid decimal reference",
-            InvalidHexReference => "invalid hex reference",
-            UnknownNamedReference => "unknown named reference",
             DuplicateAttribute => "duplicate attribute",
             RedefinedNamespace => "redefined namespace",
             RedefinedDefaultNamespace => "redefined default namespace",
@@ -219,13 +192,6 @@ impl<T> Span<T> {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
-enum Reference<'a> {
-    Entity(Span<&'a str>),
-    DecimalChar(Span<&'a str>),
-    HexChar(Span<&'a str>),
-}
-
 /// Common reusable XML parsing methods
 pub trait XmlParseExt<'a> {
     /// Parse XML whitespace
@@ -275,7 +241,6 @@ impl<'a> XmlParseExt<'a> for StringPoint<'a> {
 trait PrivateXmlParseExt<'a> {
     fn consume_attribute_value(&self, quote: &str) -> XmlProgress<'a, &'a str>;
     fn consume_name(&self) -> peresil::Progress<StringPoint<'a>, &'a str, ()>;
-    fn consume_hex_chars(&self) -> XmlProgress<'a, &'a str>;
     fn consume_char_data(&self) -> XmlProgress<'a, &'a str>;
     fn consume_cdata(&self) -> XmlProgress<'a, &'a str>;
     fn consume_int_subset(&self) -> XmlProgress<'a, &'a str>;
@@ -293,11 +258,6 @@ impl<'a> PrivateXmlParseExt<'a> for StringPoint<'a> {
 
     fn consume_name(&self) -> peresil::Progress<StringPoint<'a>, &'a str, ()> {
         self.consume_to(self.s.end_of_name())
-    }
-
-    fn consume_hex_chars(&self) -> XmlProgress<'a, &'a str> {
-        self.consume_to(self.s.end_of_hex_chars())
-            .map_err(|_| SpecificError::ExpectedHexReferenceValue)
     }
 
     fn consume_char_data(&self) -> XmlProgress<'a, &'a str> {
@@ -359,6 +319,7 @@ enum Token<'a> {
     DocumentTypeDeclaration,
     Comment(&'a str),
     ProcessingInstruction(&'a str, Option<&'a str>),
+    #[allow(dead_code)]
     Whitespace(&'a str),
     ElementStart(Span<PrefixedName<'a>>),
     ElementStartClose,
@@ -366,11 +327,10 @@ enum Token<'a> {
     ElementClose(Span<PrefixedName<'a>>),
     AttributeStart(Span<PrefixedName<'a>>, &'static str),
     AttributeEnd,
+    AttributeStandalone(Span<PrefixedName<'a>>),
     LiteralAttributeValue(&'a str),
-    ReferenceAttributeValue(Reference<'a>),
     CharData(&'a str),
     CData(&'a str),
-    ContentReference(Reference<'a>),
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -658,14 +618,20 @@ fn parse_attribute_start<'a>(
         .consume_prefixed_name()
         .map_err(|_| SpecificError::ExpectedAttribute)));
 
-    let (xml, _) = try_parse!(parse_eq(xml));
+    let eq_xml;
+    if let (parsed_eq_xml, Some(_)) = parse_eq(xml).optional(xml) {
+        eq_xml = parsed_eq_xml;
+    } else {
+        return success(Token::AttributeStandalone(name), xml);
+    }
+    //let (xml, _) = try_parse!(parse_eq(xml));
 
     let (xml, q) = try_parse!(pm
         .alternate()
-        .one(|_| xml
+        .one(|_| eq_xml
             .expect_literal(QUOT)
             .map_err(|_| SpecificError::ExpectedOpeningQuote(QUOT)))
-        .one(|_| xml
+        .one(|_| eq_xml
             .expect_literal(APOS)
             .map_err(|_| SpecificError::ExpectedOpeningQuote(APOS)))
         .finish());
@@ -804,16 +770,17 @@ impl<'a> Iterator for PullParser<'a> {
             (State::AfterElementStart(d), Token::ElementStartClose) => State::Content(d),
             (State::AfterElementStart(0), Token::ElementSelfClose) => State::AfterMainElement,
             (State::AfterElementStart(d), Token::ElementSelfClose) => State::Content(d - 1),
+            (State::AfterElementStart(d), Token::AttributeStandalone(..)) => {
+                State::AfterElementStart(d)
+            }
 
-            (State::AfterAttributeStart(d, q), Token::LiteralAttributeValue(..))
-            | (State::AfterAttributeStart(d, q), Token::ReferenceAttributeValue(..)) => {
+            (State::AfterAttributeStart(d, q), Token::LiteralAttributeValue(..)) => {
                 State::AfterAttributeStart(d, q)
             }
             (State::AfterAttributeStart(d, _), Token::AttributeEnd) => State::AfterElementStart(d),
 
             (State::Content(d), Token::CharData(..))
             | (State::Content(d), Token::CData(..))
-            | (State::Content(d), Token::ContentReference(..))
             | (State::Content(d), Token::Comment(..))
             | (State::Content(d), Token::ProcessingInstruction(..)) => State::Content(d),
             (State::Content(d), Token::ElementStart(..)) => State::AfterElementStart(d + 1),
@@ -1028,12 +995,16 @@ impl<'d> DomBuilder<'d> {
                 self.attributes.push(attr);
             }
 
-            LiteralAttributeValue(v) => {
-                self.add_attribute_value(AttributeValue::LiteralAttributeValue(v));
+            AttributeStandalone(n) => {
+                let attr = DeferredAttribute {
+                    name: n,
+                    values: vec![AttributeValue::LiteralAttributeValue("true")],
+                };
+                self.attributes.push(attr);
             }
 
-            ReferenceAttributeValue(v) => {
-                self.add_attribute_value(AttributeValue::ReferenceAttributeValue(v));
+            LiteralAttributeValue(v) => {
+                self.add_attribute_value(AttributeValue::LiteralAttributeValue(v));
             }
 
             AttributeEnd => {}
@@ -1041,10 +1012,6 @@ impl<'d> DomBuilder<'d> {
             Whitespace(..) => {}
 
             CharData(t) | CData(t) => self.add_text_data(t),
-
-            ContentReference(t) => {
-                decode_reference(t, |s| self.add_text_data(s))?;
-            }
 
             Comment(c) => {
                 let c = self.doc.create_comment(c);
@@ -1134,47 +1101,8 @@ pub fn parse(xml: &str) -> Result<super::Package, Error> {
 
 type DomBuilderResult<T> = Result<T, Span<SpecificError>>;
 
-fn decode_reference<F>(ref_data: Reference<'_>, cb: F) -> DomBuilderResult<()>
-where
-    F: FnOnce(&str),
-{
-    match ref_data {
-        DecimalChar(span) => u32::from_str_radix(span.value, 10)
-            .ok()
-            .and_then(char::from_u32)
-            .ok_or_else(|| span.map(|_| SpecificError::InvalidDecimalReference))
-            .and_then(|c| {
-                let s: String = iter::repeat(c).take(1).collect();
-                cb(&s);
-                Ok(())
-            }),
-        HexChar(span) => u32::from_str_radix(span.value, 16)
-            .ok()
-            .and_then(char::from_u32)
-            .ok_or_else(|| span.map(|_| SpecificError::InvalidHexReference))
-            .and_then(|c| {
-                let s: String = iter::repeat(c).take(1).collect();
-                cb(&s);
-                Ok(())
-            }),
-        Entity(span) => {
-            let s = match span.value {
-                "amp" => "&",
-                "lt" => "<",
-                "gt" => ">",
-                "apos" => "'",
-                "quot" => "\"",
-                _ => return Err(span.map(|_| SpecificError::UnknownNamedReference)),
-            };
-            cb(s);
-            Ok(())
-        }
-    }
-}
-
 #[derive(Debug, Copy, Clone)]
 enum AttributeValue<'a> {
-    ReferenceAttributeValue(Reference<'a>),
     LiteralAttributeValue(&'a str),
 }
 
@@ -1201,7 +1129,6 @@ impl AttributeValueBuilder {
         for value in values.iter() {
             match *value {
                 LiteralAttributeValue(v) => self.value.push_str(v),
-                ReferenceAttributeValue(r) => decode_reference(r, |s| self.value.push_str(s))?,
             }
         }
 
@@ -1535,6 +1462,15 @@ mod test {
     }
 
     #[test]
+    fn an_element_with_an_attribute_and_standalone() {
+        let package = quick_parse("<hello required scope='world'/>");
+        let doc = package.as_document();
+        let top = top(&doc);
+
+        assert_eq!(top.attribute_value("scope"), Some("world"));
+    }
+
+    #[test]
     fn an_element_with_an_attribute_using_double_quotes() {
         let package = quick_parse("<hello scope=\"world\"/>");
         let doc = package.as_document();
@@ -1589,7 +1525,7 @@ mod test {
         let doc = package.as_document();
         let top = top(&doc);
 
-        assert_eq!(top.attribute_value("msg"), Some("I <3 math"));
+        assert_eq!(top.attribute_value("msg"), Some("I &lt;3 math"));
     }
 
     #[test]
@@ -1787,48 +1723,6 @@ mod test {
     }
 
     #[test]
-    fn element_with_decimal_char_reference() {
-        let package = quick_parse("<math>2 &#62; 1</math>");
-        let doc = package.as_document();
-        let math = top(&doc);
-        let text1 = math.children()[0].text().unwrap();
-        let text2 = math.children()[1].text().unwrap();
-        let text3 = math.children()[2].text().unwrap();
-
-        assert_eq!(text1.text(), "2 ");
-        assert_eq!(text2.text(), ">");
-        assert_eq!(text3.text(), " 1");
-    }
-
-    #[test]
-    fn element_with_hexidecimal_char_reference() {
-        let package = quick_parse("<math>1 &#x3c; 2</math>");
-        let doc = package.as_document();
-        let math = top(&doc);
-        let text1 = math.children()[0].text().unwrap();
-        let text2 = math.children()[1].text().unwrap();
-        let text3 = math.children()[2].text().unwrap();
-
-        assert_eq!(text1.text(), "1 ");
-        assert_eq!(text2.text(), "<");
-        assert_eq!(text3.text(), " 2");
-    }
-
-    #[test]
-    fn element_with_entity_reference() {
-        let package = quick_parse("<math>I &lt;3 math</math>");
-        let doc = package.as_document();
-        let math = top(&doc);
-        let text1 = math.children()[0].text().unwrap();
-        let text2 = math.children()[1].text().unwrap();
-        let text3 = math.children()[2].text().unwrap();
-
-        assert_eq!(text1.text(), "I ");
-        assert_eq!(text2.text(), "<");
-        assert_eq!(text3.text(), "3 math");
-    }
-
-    #[test]
     fn element_with_mixed_children() {
         let package = quick_parse("<hello>to <!--fixme--><a><![CDATA[the]]></a><?world?></hello>");
         let doc = package.as_document();
@@ -1894,6 +1788,8 @@ mod test {
             r,
             0,
             Expected("<?xml"),
+            Expected("<!DOCTYPE"),
+            Expected("<!doctype"),
             ExpectedComment,
             ExpectedProcessingInstruction,
             ExpectedWhitespace,
@@ -1946,15 +1842,7 @@ mod test {
 
         let r = full_parse("<hi oops='value />");
 
-        assert_parse_failure!(
-            r,
-            18,
-            ExpectedNamedReference,
-            ExpectedDecimalReference,
-            ExpectedAttributeValue,
-            ExpectedHexReference,
-            ExpectedClosingQuote("\'")
-        );
+        assert_parse_failure!(r, 18, ExpectedAttributeValue, ExpectedClosingQuote("\'"));
     }
 
     #[test]
@@ -1963,15 +1851,7 @@ mod test {
 
         let r = full_parse("<hi oops='value");
 
-        assert_parse_failure!(
-            r,
-            15,
-            ExpectedNamedReference,
-            ExpectedDecimalReference,
-            ExpectedAttributeValue,
-            ExpectedHexReference,
-            ExpectedClosingQuote("\'")
-        );
+        assert_parse_failure!(r, 15, ExpectedAttributeValue, ExpectedClosingQuote("\'"));
     }
 
     #[test]
@@ -2014,24 +1894,6 @@ mod test {
     }
 
     #[test]
-    fn failure_malformed_entity_reference() {
-        use super::SpecificError::*;
-
-        let r = full_parse("<hi>Entity: &;</hi>");
-
-        assert_parse_failure!(r, 13, ExpectedNamedReferenceValue);
-    }
-
-    #[test]
-    fn failure_nested_malformed_entity_reference() {
-        use super::SpecificError::*;
-
-        let r = full_parse("<hi><bye>Entity: &;</bye></hi>");
-
-        assert_parse_failure!(r, 18, ExpectedNamedReferenceValue);
-    }
-
-    #[test]
     fn failure_nested_attribute_without_open_quote() {
         use super::SpecificError::*;
 
@@ -2051,15 +1913,7 @@ mod test {
 
         let r = full_parse("<hi><bye oops='value /></hi>");
 
-        assert_parse_failure!(
-            r,
-            23,
-            ExpectedNamedReference,
-            ExpectedDecimalReference,
-            ExpectedAttributeValue,
-            ExpectedHexReference,
-            ExpectedClosingQuote("\'")
-        );
+        assert_parse_failure!(r, 23, ExpectedAttributeValue, ExpectedClosingQuote("\'"));
     }
 
     #[test]
@@ -2068,15 +1922,7 @@ mod test {
 
         let r = full_parse("<hi><bye oops='value</hi>");
 
-        assert_parse_failure!(
-            r,
-            20,
-            ExpectedNamedReference,
-            ExpectedDecimalReference,
-            ExpectedAttributeValue,
-            ExpectedHexReference,
-            ExpectedClosingQuote("\'")
-        );
+        assert_parse_failure!(r, 20, ExpectedAttributeValue, ExpectedClosingQuote("\'"));
     }
 
     #[test]
@@ -2095,33 +1941,6 @@ mod test {
         let r = full_parse("<a></b>");
 
         assert_parse_failure!(r, 5, MismatchedElementEndName);
-    }
-
-    #[test]
-    fn failure_invalid_decimal_reference() {
-        use super::SpecificError::*;
-
-        let r = full_parse("<a>&#99999999;</a>");
-
-        assert_parse_failure!(r, 5, InvalidDecimalReference);
-    }
-
-    #[test]
-    fn failure_invalid_hex_reference() {
-        use super::SpecificError::*;
-
-        let r = full_parse("<a>&#x99999999;</a>");
-
-        assert_parse_failure!(r, 6, InvalidHexReference);
-    }
-
-    #[test]
-    fn failure_unknown_named_reference() {
-        use super::SpecificError::*;
-
-        let r = full_parse("<a>&fake;</a>");
-
-        assert_parse_failure!(r, 4, UnknownNamedReference);
     }
 
     #[test]
